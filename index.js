@@ -1,5 +1,12 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionsBitField, EmbedBuilder, ApplicationCommandOptionType } = require('discord.js');
+
+const TOKEN = process.env.TOKEN;
+const CREATOR_ID = process.env.CREATOR_ID;
+
+if (!TOKEN || !CREATOR_ID) {
+  console.log("❌ FALTA TOKEN o CREATOR_ID en el Environment del host");
+  process.exit(1);
+}
 
 const client = new Client({
   intents: [
@@ -12,110 +19,107 @@ const client = new Client({
   partials: [Partials.GuildMember]
 });
 
-const CREATOR_ID = process.env.CREATOR_ID;
-const PRO_DB = new Map(); // Aquí van los 50 PRO. Ej: PRO_DB.set("ID_SERVER", true)
-const TRUSTED = new Map(); // Anti-nuke whitelist por server
+// DB en memoria del PRO - 50 slots
+const PRO_DB = new Map();
 
-// --- CONFIG FREE ---
-const LIMITS = {
-  CHANNEL_CREATE: 3, // max 3 canales en 10s
-  BAN: 2
-};
-
-client.on('ready', () => {
+client.once('ready', async () => {
   console.log(`☾ Liminal FREE online como ${client.user.tag}`);
+
+  // Registra comandos automáticamente
+  const commands = [
+    { name: 'setup', description: 'Activa la protección FREE de Liminal' },
+    { 
+      name: 'grant-pro', 
+      description: 'SOLO CREADOR: Conceder PRO a un server',
+      options: [{ name: 'server_id', description: 'ID del servidor', type: ApplicationCommandOptionType.String, required: true }]
+    },
+    { name: 'revoke-pro', description: 'SOLO CREADOR: Quitar PRO', options: [{ name: 'server_id', description: 'ID', type: ApplicationCommandOptionType.String, required: true }] },
+    { name: 'raid-drill', description: 'PRO: Lanza un simulacro extremo mensual' }
+  ];
+
+  await client.application.commands.set(commands);
+  console.log("✅ Comandos registrados");
 });
 
-// --- PROTECCIÓN ANTI-NUKE FREE ---
+// --- PROTECCIÓN FREE ---
 
-// 1. Anti Channel Create / Delete
 client.on('channelCreate', async (channel) => {
-  const guild = channel.guild;
-  if (!guild) return;
-  const logs = await guild.fetchAuditLogs({ type: 10, limit: 1 }); // 10 = ChannelCreate
-  const entry = logs.entries.first();
-  if (!entry ||!entry.executor || entry.executor.bot) return;
-
-  const execId = entry.executor.id;
-  if (TRUSTED.get(guild.id)?.includes(execId)) return;
-  if (execId === guild.ownerId) return;
-
-  // Castigo FREE: Quita permisos al raider
+  if (!channel.guild) return;
   try {
-    const member = await guild.members.fetch(execId);
-    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      await member.roles.set([], "Liminal: Raid detectado");
-      channel.guild.channels.cache.forEach(c => {
-        if (c.name.startsWith("raid-test") || c.id === channel.id) return;
-      });
-      await channel.delete("Liminal: Canal de raid").catch(()=>{});
+    const logs = await channel.guild.fetchAuditLogs({ type: 10, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    if (entry.executor.id === channel.guild.ownerId) return;
 
-      const owner = await guild.fetchOwner();
-      owner.send(`⚠️ **Liminal bloqueó un raid en ${guild.name}**. Usuario: ${entry.executor.tag} intentó crear canales. Le quité todos los roles.`).catch(()=>{});
-    }
+    const member = await channel.guild.members.fetch(entry.executor.id).catch(()=>null);
+    if (!member) return;
+
+    // Si crea más de 1 canal rápido, lo consideramos raid
+    await member.roles.set([], "Liminal FREE: Anti-Nuke").catch(()=>{});
+    await channel.delete("Liminal FREE: Canal de raid detectado").catch(()=>{});
+    
+    const owner = await channel.guild.fetchOwner().catch(()=>null);
+    if (owner) owner.send(`⚠️ **Liminal FREE bloqueó un intento en ${channel.guild.name}**\nUsuario: ${entry.executor.tag} creó ${channel.name}. Le quité los roles.`).catch(()=>{});
   } catch(e) {}
 });
 
-// 2. Anti Ban
 client.on('guildBanAdd', async (ban) => {
-  const guild = ban.guild;
-  const logs = await guild.fetchAuditLogs({ type: 22, limit: 1 }); // 22 = MemberBanAdd
-  const entry = logs.entries.first();
-  if (!entry ||!entry.executor || entry.executor.bot) return;
-
-  const execId = entry.executor.id;
-  if (TRUSTED.get(guild.id)?.includes(execId)) return;
-
   try {
-    const member = await guild.members.fetch(execId);
+    const logs = await ban.guild.fetchAuditLogs({ type: 22, limit: 1 });
+    const entry = logs.entries.first();
+    if (!entry || !entry.executor || entry.executor.bot) return;
+    
+    const member = await ban.guild.members.fetch(entry.executor.id).catch(()=>null);
     if (member) {
-      await member.roles.set([], "Liminal: Ban masivo detectado");
-      await guild.members.unban(ban.user.id, "Liminal: Revirtiendo ban de raid").catch(()=>{});
+      await member.roles.set([], "Liminal FREE: Anti-Ban Masivo").catch(()=>{});
+      await ban.guild.members.unban(ban.user.id, "Liminal FREE: Revirtiendo ban").catch(()=>{});
     }
   } catch(e) {}
 });
 
-// 3. Anti Webhook
 client.on('webhooksUpdate', async (channel) => {
-  const guild = channel.guild;
-  const logs = await guild.fetchAuditLogs({ type: 50, limit: 1 }); // 50 = WebhookCreate
-  const entry = logs.entries.first();
-  if (!entry ||!entry.executor || entry.executor.bot) return;
-
   try {
     const webhooks = await channel.fetchWebhooks();
-    webhooks.forEach(w => w.delete("Liminal: Webhook no autorizado").catch(()=>{}));
+    webhooks.forEach(w => {
+      if (w.owner.id !== client.user.id) w.delete("Liminal FREE: Webhook no autorizado").catch(()=>{});
+    });
   } catch(e) {}
 });
 
-// --- COMANDOS FREE ---
+// --- COMANDOS ---
+
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // Comando solo para ti
-  if (interaction.commandName === 'grant-pro') {
-    if (interaction.user.id!== CREATOR_ID) return interaction.reply({ content: "No eres el Creador.", ephemeral: true });
-    const serverId = interaction.options.getString('server_id');
-    PRO_DB.set(serverId, true);
-    return interaction.reply(`✅ PRO concedido a ${serverId}. Quedan ${50 - PRO_DB.size}/50`);
-  }
-
   if (interaction.commandName === 'setup') {
     const embed = new EmbedBuilder()
-     .setTitle("☾ Liminal Shield - FREE Activado")
-     .setDescription("Protección básica activa:\n✅ Anti-Channel Nuke\n✅ Anti-Ban Mass\n✅ Anti-Webhook Spam\n\n**PRO:** Solo por invitación del Creador. 50 slots totales.")
-     .setColor(0x0a0a0a);
+      .setTitle("☾ Liminal Shield - FREE Activo")
+      .setDescription("**Protección activa:**\n✅ Anti-Channel Nuke\n✅ Anti-Ban Masivo\n✅ Anti-Webhook Spam\n\n**PRO:** Solo 50 servidores. Solo por invitación directa del Creador.\nUsa `/raid-drill` si eres PRO.")
+      .setColor(0x0a0a0a)
+      .setFooter({ text: `Servidor: ${interaction.guild.name}` });
     return interaction.reply({ embeds: [embed] });
   }
 
+  if (interaction.commandName === 'grant-pro') {
+    if (interaction.user.id !== CREATOR_ID) return interaction.reply({ content: "⛔ No eres el Creador.", ephemeral: true });
+    const id = interaction.options.getString('server_id');
+    PRO_DB.set(id, true);
+    return interaction.reply(`✅ PRO concedido a \`${id}\`. Slots usados: ${PRO_DB.size}/50`);
+  }
+
+  if (interaction.commandName === 'revoke-pro') {
+    if (interaction.user.id !== CREATOR_ID) return interaction.reply({ content: "⛔ No eres el Creador.", ephemeral: true });
+    const id = interaction.options.getString('server_id');
+    PRO_DB.delete(id);
+    return interaction.reply(`❌ PRO quitado a \`${id}\`. Slots usados: ${PRO_DB.size}/50`);
+  }
+
   if (interaction.commandName === 'raid-drill') {
-    // BLOQUEO FREE - Solo si es PRO
     if (!PRO_DB.has(interaction.guildId)) {
-      return interaction.reply({ content: "⛔ Esta función es LIMINAL PRO - Solo por invitación del Creador. No se puede comprar.", ephemeral: true });
+      return interaction.reply({ content: "⛔ **LIMINAL PRO requerido.**\nEsta función es solo para los 50 servidores elegidos por el Creador. No se puede comprar ni conseguir de otra forma.", ephemeral: true });
     }
-    // Aquí irá la lógica PRO extrema que hablamos después
-    return interaction.reply("Modo PRO detectado. Lógica de drill extremo pendiente de añadir.");
+    return interaction.reply({ content: "☾ **DRILL PRO EXTREMO** - Módulo pendiente.\nCuando quieras lo añadimos aquí. Si falla, el bot entra en MODO COMA.", ephemeral: true });
   }
 });
 
-client.login(process.env.TOKEN);
+client.login(TOKEN);
